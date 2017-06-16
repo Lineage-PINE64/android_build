@@ -1064,6 +1064,7 @@ define build-recoveryramdisk
   $(hide) mkdir -p $(TARGET_RECOVERY_ROOT_OUT)/etc $(TARGET_RECOVERY_ROOT_OUT)/sdcard $(TARGET_RECOVERY_ROOT_OUT)/tmp
   @echo Copying baseline ramdisk...
   $(hide) rsync -a --exclude=etc --exclude=sdcard --exclude=vendor $(IGNORE_CACHE_LINK) $(TARGET_ROOT_OUT) $(TARGET_RECOVERY_OUT) # "cp -Rf" fails to overwrite broken symlinks on Mac.
+  $(hide) cp -f $(PRODUCT_OUT)/obj/*.ko $(TARGET_RECOVERY_ROOT_OUT)
   @echo Modifying ramdisk contents...
   $(hide) rm -f $(TARGET_RECOVERY_ROOT_OUT)/init*.rc
   $(hide) cp -f $(recovery_initrc) $(TARGET_RECOVERY_ROOT_OUT)/
@@ -1840,6 +1841,14 @@ define package_files-copy-root
   fi
 endef
 
+uboot_ota := \
+    $(PRODUCT_OUT)/boot0_nand.fex \
+    $(PRODUCT_OUT)/boot0_sdcard.fex \
+    $(PRODUCT_OUT)/u-boot.fex \
+    $(PRODUCT_OUT)/boot-resource \
+    $(PRODUCT_OUT)/boot-resource.fex \
+    $(PRODUCT_OUT)/env.fex
+
 built_ota_tools :=
 
 # We can't build static executables when SANITIZE_TARGET=address
@@ -1849,6 +1858,7 @@ built_ota_tools += \
 endif
 
 $(BUILT_TARGET_FILES_PACKAGE): PRIVATE_OTA_TOOLS := $(built_ota_tools)
+$(BUILT_TARGET_FILES_PACKAGE): PRIVATE_OTA_UBOOT := $(uboot_ota)
 
 $(BUILT_TARGET_FILES_PACKAGE): PRIVATE_RECOVERY_API_VERSION := $(RECOVERY_API_VERSION)
 $(BUILT_TARGET_FILES_PACKAGE): PRIVATE_RECOVERY_FSTAB_VERSION := $(RECOVERY_FSTAB_VERSION)
@@ -2029,6 +2039,7 @@ ifneq ($(AB_OTA_UPDATER),true)
 ifneq ($(built_ota_tools),)
 	$(hide) mkdir -p $(zip_root)/OTA/bin
 	$(hide) $(ACP) $(PRIVATE_OTA_TOOLS) $(zip_root)/OTA/bin/
+	$(hide) $(ACP) -r $(PRIVATE_OTA_UBOOT) $(zip_root)/
 endif
 endif
 	@# Files that do not end up in any images, but are necessary to
@@ -2241,12 +2252,41 @@ CM_TARGET_PACKAGE := $(PRODUCT_OUT)/lineage-$(LINEAGE_VERSION).zip
 
 .PHONY: otapackage bacon
 otapackage: $(INTERNAL_OTA_PACKAGE_TARGET)
+
 bacon: otapackage
 	$(hide) ln -f $(INTERNAL_OTA_PACKAGE_TARGET) $(CM_TARGET_PACKAGE)
 	$(hide) $(MD5SUM) $(CM_TARGET_PACKAGE) | sed "s|$(PRODUCT_OUT)/||" > $(CM_TARGET_PACKAGE).md5sum
 	@echo "Package Complete: $(CM_TARGET_PACKAGE)" >&2
 
 endif    # build_ota_package
+
+# -----------------------------------------------------------------
+# OTA update package from old_target_files.zip
+
+name := $(TARGET_PRODUCT)
+ifeq ($(TARGET_BUILD_TYPE),debug)
+  name := $(name)_debug
+endif
+name := $(name)-ota-$(FILE_NAME_TAG)-inc
+
+INTERNAL_OTA_PACKAGE_TARGET_INC := $(PRODUCT_OUT)/$(name).zip
+
+$(INTERNAL_OTA_PACKAGE_TARGET_INC): KEY_CERT_PAIR := $(DEFAULT_KEY_CERT_PAIR)
+
+$(INTERNAL_OTA_PACKAGE_TARGET_INC): $(BUILT_TARGET_FILES_PACKAGE) $(OTATOOLS)
+	@echo "Package OTA: $@"
+	$(hide) MKBOOTIMG=$(MKBOOTIMG) \
+	   ./build/tools/releasetools/ota_from_target_files -v \
+	   --block \
+	   -p $(HOST_OUT) \
+	   -k $(KEY_CERT_PAIR) \
+	   -i ./old_target_files.zip \
+	   $(if $(OEM_OTA_CONFIG), -o $(OEM_OTA_CONFIG)) \
+	   $(BUILT_TARGET_FILES_PACKAGE) $@
+
+.PHONY: otapackage_inc
+otapackage_inc: $(INTERNAL_OTA_PACKAGE_TARGET_INC)
+
 # -----------------------------------------------------------------
 # The factory package
 
